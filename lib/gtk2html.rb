@@ -6,13 +6,51 @@ require 'gtk2svg'
 require 'htmle'
 
 
+module InspectArray
+      
+  def scan(a, i=0)
+    
+    if a.first.is_a? Symbol
+      
+        puts a.inspect    
+        
+    else
+      
+      puts ('  ' * i) + '['
+
+      a.each.with_index do |row, j|
+
+        if row.is_a? String or row.is_a? Symbol then
+          print ('  ' * (i+1)) + row.inspect
+          print ',' unless a.length - 1 == j
+          puts
+        elsif row.first.is_a? Symbol or row.first.is_a? String
+          puts ('  ' * (i+1)) + '['
+          puts ('  ' * (i+2)) + row.inspect[1..-2]
+          print ('  ' * (i+1)) + ']'
+          print ',' unless a.length - 1 == j
+          puts
+        else
+          scan(row,i+1)
+          print ',' unless a.length - 1 == j
+          puts
+        end
+      end
+
+      print indent = ('  ' * i) + ']'
+    end
+  end
+  
+end
+
+
 module Gtk2HTML
 
   class Render < DomRender
 
     def initialize(x, width, height)
       
-      @width, @height = width, height
+      @width, @height = width.to_i, height.to_i
       super x
       
     end    
@@ -20,17 +58,30 @@ module Gtk2HTML
     def body(e, attributes, raw_style)
 
       style = style_filter(attributes).merge(raw_style)
-
-      h = attributes
+      margin = style[:margin].values
+      coords = [nil, nil, nil, nil]
+      padding = style[:padding].values
       
-      [[:draw_box, [x1,y1,x2,y2], style], render_all(e)]
+      [[:draw_box, margin, coords, padding, style], render_all(e)]
     end    
+    
+    def strong(e, attributes, raw_style)
+
+      style = style_filter(attributes).merge(raw_style)
+      margin = style[:margin].values
+      coords = [nil, nil, nil, nil]
+      padding = style[:padding].values
+      
+      [[:draw_box, margin, coords, padding, style], render_all(e)]
+    end      
+    
+    alias b strong
 
     def div(e, attributes, raw_style)
       
       style = style_filter(attributes).merge(raw_style)
       margin = style[:margin].values
-      coords = [0, nil, @width, @height/2]
+      coords = [nil, nil, nil, nil]
       padding = style[:padding].values
       
       [[:draw_box, margin, coords, padding, style], render_all(e)]
@@ -43,7 +94,11 @@ module Gtk2HTML
       padding = style[:padding].values
 
       [[:draw_box, margin, coords, padding, style], render_all(e)]
-    end    
+    end
+
+    def style(*args)
+      
+    end
     
     private
     
@@ -51,18 +106,25 @@ module Gtk2HTML
       
       h = super attribute
 
-      %i(margin padding).inject(h) do |r,x|
+      r2 = %i(margin padding).inject(h) do |r,x|
 
         if h.has_key? x then
 
           a = expand_shorthand(h[x]) 
-          a.map!(&:to_i) # assumes everything is in pixels not em
+
+          a.map! do |v|
+            # note: there is 16px in 1em, see http://pxtoem.com/
+            v =~ /em$/i ? v.to_f * 16 : v.to_f
+          end
+
           r.merge!(x => Hash[%i(top right bottom left).zip(a)])
         else
           r
         end
 
       end
+      
+      r2
       
     end    
     
@@ -77,55 +139,82 @@ module Gtk2HTML
   end
   
   class Layout
+    include InspectArray
     
     attr_reader :to_a
     
     def initialize(instructions, width: 320, height: 240)
       
-      @width, @height = width, height
-      a = lay_out(instructions, pcoords: [0, 0, @width, @height])
-      @to_a = a
+      @pcoords = [0, 0, width, height]
+      @a = lay_out(instructions)
       
+    end
+    
+    def to_a(inspect: false, verbose: false)
+      
+      if inspect or verbose then
+        scan @a
+        puts
+      else
+        @a
+      end
+
     end
     
 
     private
 
-    def lay_out(a, pcoords: [])
+    def lay_out(a)
 
-      item, children = a
+      if a.first.is_a? Symbol then
+
+        @text_style = %i(font-size color).inject({}){|r,x| r.merge(x => a[4][x]) }
+
+        set_row(a)
+        
+      elsif a.first.is_a? String then
+        a.concat [@pcoords.take(2), @text_style]
+      elsif a.first.is_a? Array and a.first.empty?
+        a.delete a.first
+        lay_out a
+      else
+
+        a.map do |row|
+
+          if a.first.is_a? String then
+            a.concat [@pcoords.take(2), style]
+          else
+            lay_out(row)
+          end
+        end
+
+      end
+
+    end         
+    
+    def set_row(row)
+
+      name, margin, raw_coords, padding, style = row
       
-      name, margin, raw_coords, padding, style = item
-      
-      coords = raw_coords.map.with_index {|x,i| x ? x : pcoords[i]}
+      coords = raw_coords.map.with_index {|x,i| x ? x : @pcoords[i]}
       
       x1 = coords[0] + margin[0]
       y1 = coords[1] + margin[1]
       x2 = coords[2] - margin[2]
       y2 = coords[3] - margin[3]      
 
-      item[2] = [x1, y1, x2, y2]
-
-      nested = if children and children.length > 1 then
-        lay_out(children, pcoords: coords) 
-      else
-        children
-      end
-      #[owidth=(coords[2] - coords[0]), oheight=(coords[3] - coords[1])]
-      r = [item]
-      r << nested if nested
-      r
-    end    
-    
-    def lay_out2(a, pcoords: [])
+      new_coords = [x1, y1, x2, y2]
       
-      name, raw_coords, attributes, style, children = a
-      coords = raw_coords.map.with_index {|x,i| x ? x : pcoords[i]}
-
-      owidth, oheight = lay_out(children, pcoords: coords) if children
+      curpos = new_coords.zip(padding).map{|x| x.inject(&:+)}      
       
-      [(coords[2] - coords[0]), (coords[3] - coords[1])]
-    end    
+      @pcoords[0] = x1 + padding[0]
+      @pcoords[1] = y1 + padding[1]
+      @pcoords[2] = x2 - padding[2]
+      @pcoords[3] = y2 - padding[3]      
+      
+      r = [name, margin, new_coords, padding, style]      
+
+    end
     
   end
   
@@ -140,15 +229,12 @@ module Gtk2HTML
 
     end    
     
-    def draw_box(margin, raw_coords, padding, style)
-
-      coords = raw_coords.map.with_index {|x,i| x ? x : @curpos[i] }
+    def draw_box(margin, coords, padding, style)
 
       h2 = style.clone
       h2.delete :color
+
       x1, y1, x2, y2 = coords
-      
-      @curpos = coords
 
       width = x2 - x1
       height = y2 - y1
@@ -157,10 +243,10 @@ module Gtk2HTML
       @area.window.draw_rectangle(gc, 1, x1, y1, width, height)
     end
     
-    def draw_layout(text, style)
-
-      x, y = @curpos
-
+    def draw_layout(text, coords, style)
+      
+      x, y = coords
+    
       text ||= ''
       h2 = style.clone
       h2.delete :'background-color'      
@@ -195,33 +281,39 @@ module Gtk2HTML
       a.each do |row|
         
         next unless row
-        x, remaining = row
 
-        case x[0].class.to_s.to_sym
+        x = row
+
+        case row[0].class.to_s.to_sym
 
         when :Symbol
           
-          name, *args = x
+          name, margin, coords, padding, style, *children = x
                   
-          @latest_style = args[3]
-
-          method(name).call(*args)
-          draw remaining
+          @latest_style = style
+          method(name).call(margin, coords, padding, style)
+          draw children
           
         when :String then
 
           next if x.empty?
 
-          method(:draw_layout).call(x, @latest_style)
+          coords, style = row[1..-1]#remaining
+          method(:draw_layout).call(x,coords, style)
 
         when :Array
-          draw remaining
+
+          if row[-1][0].is_a? String then
+            method(:draw_layout).call(*row[-1])
+          else
+            draw row[-1]
+          end
         else    
           
           name, *args = x
 
           method(name).call(args)
-          draw remaining
+          draw row[-1]
         end
 
       end
@@ -298,11 +390,12 @@ module Gtk2HTML
           
           @width, @height = window.size
           instructions = Gtk2HTML::Render.new(@doc, @width, @height).to_a
+
           @layout_instructions = Gtk2HTML::Layout.new(instructions).to_a
 
         end
 
-        drawing = DrawingInstructions.new area
+        drawing = Gtk2HTML::DrawingInstructions.new area
         drawing.render @layout_instructions
         @dirty = false
         
