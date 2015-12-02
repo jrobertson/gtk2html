@@ -6,42 +6,7 @@ require 'gtk2svg'
 require 'htmle'
 
 
-module InspectArray
-      
-  def scan(a, i=0)
-    
-    if a.first.is_a? Symbol
-      
-        puts a.inspect    
-        
-    else
-      
-      puts ('  ' * i) + '['
-
-      a.each.with_index do |row, j|
-
-        if row.is_a? String or row.is_a? Symbol then
-          print ('  ' * (i+1)) + row.inspect
-          print ',' unless a.length - 1 == j
-          puts
-        elsif row.first.is_a? Symbol or row.first.is_a? String
-          puts ('  ' * (i+1)) + '['
-          puts ('  ' * (i+2)) + row.inspect[1..-2]
-          print ('  ' * (i+1)) + ']'
-          print ',' unless a.length - 1 == j
-          puts
-        else
-          scan(row,i+1)
-          print ',' unless a.length - 1 == j
-          puts
-        end
-      end
-
-      print indent = ('  ' * i) + ']'
-    end
-  end
-  
-end
+# module InspectArray is located in dom_render.rb
 
 
 module Gtk2HTML
@@ -123,8 +88,24 @@ module Gtk2HTML
         end
 
       end
+
+      r3 =  %i(height width).inject(r2) do |r,x|
+
+        if r.has_key? x then
+
+          v = r[x]
+
+          # note: there is 16px in 1em, see http://pxtoem.com/
+          r[x] = v =~ /em$/i ? v.to_f * 16 : v.to_f          
+          r
+
+        else
+          r
+        end
+
+      end      
       
-      r2
+      r3
       
     end    
     
@@ -145,9 +126,11 @@ module Gtk2HTML
     
     def initialize(instructions, width: 320, height: 240)
       
-      @pcoords = [0, 0, width, height]
-      @a = lay_out(instructions)
-      
+      pcoords = [0, 0, width, height]
+      @pcoords = [0,0,0,0]      
+      a = lay_out(instructions, pcoords)
+      @a = del_pcoords a
+
     end
     
     def to_a(inspect: false, verbose: false)
@@ -155,6 +138,7 @@ module Gtk2HTML
       if inspect or verbose then
         scan @a
         puts
+        @a
       else
         @a
       end
@@ -163,56 +147,105 @@ module Gtk2HTML
     
 
     private
+    
+    def del_pcoords(a)
 
-    def lay_out(a)
+      if a.first.is_a? Array then
+        a.map {|row| del_pcoords row if row}
+      else
+        a.pop
+        a
+      end
+    end
 
+    def lay_out(a, pcoords=[])
+            
       if a.first.is_a? Symbol then
-
-        @text_style = %i(font-size color).inject({}){|r,x| r.merge(x => a[4][x]) }
-
-        set_row(a)
+        
+        @text_style = %i(font-size color).inject({})\
+                                                 {|r,x| r.merge(x => a[4][x]) }
+        set_row(a, pcoords)
         
       elsif a.first.is_a? String then
-        a.concat [@pcoords.take(2), @text_style]
-      elsif a.first.is_a? Array and a.first.empty?
-        a.delete a.first
-        lay_out a
-      else
+        
+        [a.first, @pcoords.take(2), @text_style, pcoords]
+        
+      elsif a.first.is_a? Array 
+        
+        if a.first.empty? then
+          a.delete a.first
+          lay_out a, pcoords
+        else
+          
+          if a.first.first.is_a? Symbol then            
+            
+            item, children = a
 
-        a.map do |row|
+            r = lay_out(item, pcoords)
 
-          if a.first.is_a? String then
-            a.concat [@pcoords.take(2), style]
+            pcoords = r[-1]
+
+            if children then
+
+              r2 = lay_out(children, pcoords) 
+              r = [r,r2]
+            else
+              r
+            end
+
+            #r << pcoords
+            
           else
-            lay_out(row)
+            a.map {|row| lay_out(row, pcoords) }
           end
+
         end
 
-      end
+      else
 
+        a.map {|row| lay_out(row, pcoords) }
+
+      end
+      
     end         
     
-    def set_row(row)
-
-      name, margin, raw_coords, padding, style = row
+    def set_row(row, pcoords)
       
-      coords = raw_coords.map.with_index {|x,i| x ? x : @pcoords[i]}
+      name, margin, raw_coords, padding, style = row
+    
+      coords = raw_coords.map.with_index {|x,i| x ? x : pcoords[i]}
+      
+      width, height = style[:width], style[:height]
       
       x1 = coords[0] + margin[0]
       y1 = coords[1] + margin[1]
-      x2 = coords[2] - margin[2]
-      y2 = coords[3] - margin[3]      
-
-      new_coords = [x1, y1, x2, y2]
       
-      curpos = new_coords.zip(padding).map{|x| x.inject(&:+)}      
+      if width then
+
+        x2 = x1 + width.to_f
+        x2 += margin[2]        
+      else
+        x2 = coords[2] - margin[2]
+      end
+      
+      if height then
+
+        y2 = y1 + height.to_f
+        y2 += margin[3]
+
+      else
+        y2 = coords[3] - margin[3]      
+      end
+
+      new_coords = [x1, y1, x2, y2]        
       
       @pcoords[0] = x1 + padding[0]
       @pcoords[1] = y1 + padding[1]
       @pcoords[2] = x2 - padding[2]
       @pcoords[3] = y2 - padding[3]      
-      
-      r = [name, margin, new_coords, padding, style]      
+      pcoords = @pcoords.clone
+
+      [name, margin, new_coords, padding, style, pcoords]
 
     end
     
@@ -244,7 +277,7 @@ module Gtk2HTML
     end
     
     def draw_layout(text, coords, style)
-      
+
       x, y = coords
     
       text ||= ''
@@ -264,7 +297,7 @@ module Gtk2HTML
     end
 
     def render(a)      
-      draw [a]
+      draw a
     end
     
     def script(args)
@@ -275,49 +308,63 @@ module Gtk2HTML
     private
     
     def draw(a)
-      
+            
       return unless a
       
-      a.each do |row|
+      if a.first.is_a? Symbol then
         
-        next unless row
+        name, margin, coords, padding, style, _, *children = a                  
+        method(name).call(margin, coords, padding, style)
+        draw children
+        
+      elsif a.first.is_a? String and not a.first.empty?
 
-        x = row
+        coords, style = a[1..-1]#remaining
+        method(:draw_layout).call(a.first, coords, style)
+        
+      else
+      
+        a.each do |row|
 
-        case row[0].class.to_s.to_sym
+          next unless row
 
-        when :Symbol
-          
-          name, margin, coords, padding, style, *children = x
-                  
-          @latest_style = style
-          method(name).call(margin, coords, padding, style)
-          draw children
-          
-        when :String then
+          x = row
 
-          next if x.empty?
+          case row[0].class.to_s.to_sym
 
-          coords, style = row[1..-1]#remaining
-          method(:draw_layout).call(x,coords, style)
+          when :Symbol
+            
+            name, margin, coords, padding, style, _, *children = x
+                    
+            method(name).call(margin, coords, padding, style)
+            draw children
+            
+          when :String then
 
-        when :Array
+            next if x.empty?
 
-          if row[-1][0].is_a? String then
-            method(:draw_layout).call(*row[-1])
-          else
+            coords, style = row[1..-1]#remaining
+            
+            method(:draw_layout).call(*row)
+
+          when :Array
+
+            if row[-1][0].is_a? String then
+              method(:draw_layout).call(*row[-1])
+            else
+              draw row[-1]
+            end
+          else    
+            
+            name, *args = x
+
+            method(name).call(args)
             draw row[-1]
           end
-        else    
-          
-          name, *args = x
 
-          method(name).call(args)
-          draw row[-1]
         end
-
       end
-      
+        
     end
     
     def set_colour(c)
