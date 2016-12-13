@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name = 'gtk2html'
-  s.version = '0.2.2'
+  s.version = '0.2.3'
   s.summary = 'Experimental gem to render HTML using Gtk2'
   s.authors = ['James Robertson']
   s.files = Dir['lib/gtk2html.rb']

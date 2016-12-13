@@ -43,7 +43,7 @@ module Gtk2HTML
     alias b strong
 
     def div(e, attributes, raw_style)
-      
+
       style = style_filter(attributes).merge(raw_style)
       margin = style[:margin].values
       coords = [nil, nil, nil, nil]
@@ -54,9 +54,9 @@ module Gtk2HTML
     
     def html(e, attributes, style)   
 
-      margin = style[:margin].values
+      margin = [0, 0, 0, 0] # style[:margin].values
       coords = [0, 0, @width, @height]
-      padding = style[:padding].values
+      padding = [0, 0, 0, 0] # style[:padding].values
 
       [[:draw_box, margin, coords, padding, style], render_all(e)]
     end
@@ -159,7 +159,7 @@ module Gtk2HTML
     end
 
     def lay_out(a, pcoords=[])
-            
+
       if a.first.is_a? Symbol then
         
         @text_style = %i(font-size color).inject({})\
@@ -171,7 +171,7 @@ module Gtk2HTML
         [a.first, @pcoords.take(2), @text_style, pcoords]
         
       elsif a.first.is_a? Array 
-        
+
         if a.first.empty? then
           a.delete a.first
           lay_out a, pcoords
@@ -185,7 +185,7 @@ module Gtk2HTML
 
             pcoords = r[-1]
 
-            if children then
+            if children.any? then
 
               r2 = lay_out(children, pcoords) 
               r = [r,r2]
@@ -196,7 +196,11 @@ module Gtk2HTML
             #r << pcoords
             
           else
-            a.map {|row| lay_out(row, pcoords) }
+            a.map do |row| 
+              row2 =lay_out(row, pcoords) 
+              pcoords[1] = row2[1][2]
+              row2
+            end
           end
 
         end
@@ -339,7 +343,7 @@ module Gtk2HTML
             method(name).call(margin, coords, padding, style)
             draw children
             
-          when :String then
+          when :'Rexle::Element::Value' then
 
             next if x.empty?
 
@@ -410,7 +414,7 @@ module Gtk2HTML
       
       @html = html
       @doc = Htmle.new(html, callback: self)
-      
+
       @area = area = Gtk::DrawingArea.new
       client_code = []
       
@@ -422,8 +426,8 @@ module Gtk2HTML
       window.set_default_size(@width, @height)
       
       @dirty = true
-      
-      
+
+
       area.signal_connect("expose_event") do      
         
         width, height = window.size
