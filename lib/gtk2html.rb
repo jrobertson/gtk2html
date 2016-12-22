@@ -60,6 +60,15 @@ module Gtk2HTML
 
       [[:draw_box, margin, coords, padding, style], render_all(e)]
     end
+    
+    def input(e, attributes, style)   
+
+      margin = [0, 0, 0, 0] # style[:margin].values
+      coords = [0, 0, @width, @height]
+      padding = [0, 0, 0, 0] # style[:padding].values
+
+      [[:add_inputbox, margin, coords, padding, style], render_all(e)]
+    end    
 
     def style(*args)
       
@@ -137,7 +146,6 @@ module Gtk2HTML
       
       if inspect or verbose then
         scan @a
-        puts
         @a
       else
         @a
@@ -257,12 +265,14 @@ module Gtk2HTML
   
   class DrawingInstructions
 
-    attr_accessor :area
+    attr_accessor :layout        
+    attr_reader :widgets
 
 
-    def initialize(area=nil)
+    def initialize(layout=nil)
 
-      @area = area if area
+      @layout = layout if layout
+      @widgets = []
 
     end    
     
@@ -277,9 +287,10 @@ module Gtk2HTML
       height = y2 - y1
 
       gc = gc_ini(h2)
-      @area.window.draw_rectangle(gc, 1, x1, y1, width, height)
+      @layout.bin_window.draw_rectangle(gc, 1, x1, y1, width, height)
     end
     
+
     def draw_layout(text, coords, style)
 
       x, y = coords
@@ -294,7 +305,7 @@ module Gtk2HTML
       layout.text = text
             
       gc = gc_ini(h2)
-      @area.window.draw_layout(gc, x, y, layout)
+      @layout.bin_window.draw_layout(gc, x, y, layout)
     end          
     
     def window(args)
@@ -312,13 +323,15 @@ module Gtk2HTML
     private
     
     def draw(a)
-            
+
       return unless a
       
       if a.first.is_a? Symbol then
         
         name, margin, coords, padding, style, _, *children = a                  
-        method(name).call(margin, coords, padding, style)
+         
+        method(name).call(margin, coords, padding, style) if name =~ /^draw_/
+        
         draw children
         
       elsif a.first.is_a? String and not a.first.empty?
@@ -340,7 +353,7 @@ module Gtk2HTML
             
             name, margin, coords, padding, style, _, *children = x
                     
-            method(name).call(margin, coords, padding, style)
+            method(name).call(margin, coords, padding, style) if name =~ /^draw_/
             draw children
             
           when :'Rexle::Element::Value' then
@@ -352,17 +365,14 @@ module Gtk2HTML
             method(:draw_layout).call(*row)
 
           when :Array
-
-            if row[-1][0].is_a? String then
-              method(:draw_layout).call(*row[-1])
-            else
-              draw row[-1]
-            end
+            
+            draw row
+            
           else    
             
             name, *args = x
 
-            method(name).call(args)
+            method(name).call(args) if name =~ /^draw_/
             draw row[-1]
           end
 
@@ -392,7 +402,7 @@ module Gtk2HTML
 
     def gc_ini(style)
       
-      gc = Gdk::GC.new(@area.window)
+      gc = Gdk::GC.new(@layout.bin_window)
 
       color, bgcolor = style[:color], style[:'background-color']
 
@@ -404,10 +414,103 @@ module Gtk2HTML
     
   end
   
+  class WidgetInstructions
+
+    attr_accessor :layout        
+
+
+    def initialize(layout=nil)
+
+      @layout = layout if layout
+
+    end    
+    
+    
+    def add_inputbox(margin, coords, padding, style)
+      
+      h2 = style.clone
+      h2.delete :color
+
+      x1, y1, x2, y2 = coords
+
+      width = x2 - x1
+      height = y2 - y1
+            
+      entry = Gtk::Entry.new
+      entry.set_text('type something')        
+      @layout.put entry, 10,40 
+      
+    end    
+    
+    def render(a)      
+      add a
+    end
+    
+  
+    private
+    
+    def add(a)
+
+      return unless a
+      
+      if a.first.is_a? Symbol then
+        
+        name, margin, coords, padding, style, _, *children = a                  
+        return if name =~ /^draw_/
+        method(name).call(margin, coords, padding, style)
+        add children
+        
+      else
+      
+        a.each do |row|
+
+          next unless row
+
+          x = row
+
+          case row[0].class.to_s.to_sym
+
+          when :Symbol
+
+            name, margin, coords, padding, style, _, *children = x
+                    
+            next if name =~ /^draw_/
+            method(name).call(margin, coords, padding, style)
+            add children
+            
+          when :'Rexle::Element::Value' then
+
+            next 
+
+          when :Array
+
+            if row[-1][0].is_a? String then
+              next
+            else
+              add row[-1]
+            end
+          else    
+            
+            name, *args = x
+
+            next if name =~ /^draw_/
+            method(name).call(args)
+            add row[-1]
+          end
+
+        end
+      end
+        
+    end
+    
+
+  end
+  
+  
   class Main
     
     
-    attr_accessor :doc, :html
+    attr_accessor :doc, :html, :layout_instructions
     attr_reader :width, :height, :window
     
     def initialize(html, irb: false)
@@ -416,6 +519,10 @@ module Gtk2HTML
       @doc = Htmle.new(html, callback: self)
 
       @area = area = Gtk::DrawingArea.new
+      @layout = layout = Gtk::Layout.new
+      widgets = nil
+      
+      
       client_code = []
       
       window = Gtk::Window.new
@@ -428,7 +535,7 @@ module Gtk2HTML
       @dirty = true
 
 
-      area.signal_connect("expose_event") do      
+      layout.signal_connect("expose_event") do      
         
         width, height = window.size
 
@@ -436,18 +543,14 @@ module Gtk2HTML
 
         
         if @dirty then
-
-          Thread.new { @doc.root.xpath('//script').each {|x| eval x.text.unescape } }
           
-          @width, @height = window.size
-          instructions = Gtk2HTML::Render.new(@doc, @width, @height).to_a
-
-          @layout_instructions = Gtk2HTML::Layout.new(instructions).to_a
+          @layout_instructions = prepare_layout @doc
 
         end
 
-        drawing = Gtk2HTML::DrawingInstructions.new area
+        drawing = Gtk2HTML::DrawingInstructions.new layout
         drawing.render @layout_instructions
+
         @dirty = false
         
       end
@@ -473,8 +576,15 @@ module Gtk2HTML
           
         end        
       end     
+
+      layout_instructions = prepare_layout @doc
+
+      widgets = Gtk2HTML::WidgetInstructions.new layout
+      widgets.render layout_instructions
+
+      @layout.put area, 0, 0
       
-      window.add(area).show_all
+      window.add(@layout).show_all
       window.show_all.signal_connect("destroy"){Gtk.main_quit}
 
       irb ? Thread.new {Gtk.main  } : Gtk.main
@@ -494,6 +604,17 @@ module Gtk2HTML
       @doc = Htmle.new(svg, callback: self)
     end
     
+    private
+    
+    def prepare_layout(doc)
+      
+      Thread.new { doc.root.xpath('//script').each {|x| eval x.text.unescape } }
+      
+      @width, @height = window.size
+      instructions = Gtk2HTML::Render.new(doc, @width, @height).to_a
+
+      Gtk2HTML::Layout.new(instructions).to_a      
+    end
   end  
   
 end
